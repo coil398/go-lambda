@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -25,7 +28,7 @@ type Response struct {
 	Threads []Thread `json:"body"`
 }
 
-func Handler() (Response, error) {
+func Handler() (interface{}, error) {
 
 	sess, err := session.NewSession()
 	if err != nil {
@@ -60,8 +63,17 @@ func Handler() (Response, error) {
 		fmt.Println("Unmarshalable error: ", err)
 	}
 
-	return Response{
-		Threads: threads,
+	jsonBody, err := json.Marshal(threads)
+	if err != nil {
+		panic(err)
+	}
+
+	return events.APIGatewayProxyResponse{
+		Body:       string(jsonBody),
+		StatusCode: http.StatusOK,
+		Headers: map[string]string{
+			"Access-Control-Allow-Origin": "*",
+		},
 	}, nil
 }
 

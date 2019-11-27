@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -20,7 +23,9 @@ type Response struct {
 	Responses interface{} `json:"body"`
 }
 
-func Handler(request Request) (interface{}, error) {
+func Handler(request events.APIGatewayProxyRequest) (interface{}, error) {
+
+	id := request.QueryStringParameters["id"]
 
 	sess, err := session.NewSession()
 	if err != nil {
@@ -36,7 +41,7 @@ func Handler(request Request) (interface{}, error) {
 		},
 		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
 			":id": {
-				S: aws.String(request.ThreadID),
+				S: aws.String(id),
 			},
 		},
 		KeyConditionExpression: aws.String("#ThreadID = :id"),
@@ -55,9 +60,17 @@ func Handler(request Request) (interface{}, error) {
 
 	rv := reflect.ValueOf(responses[0])
 	res := rv.MapIndex(reflect.ValueOf("responses")).Interface()
+	jsonBody, err := json.Marshal(res)
+	if err != nil {
+		panic(err)
+	}
 
-	return Response{
-		Responses: res,
+	return events.APIGatewayProxyResponse{
+		Body:       string(jsonBody),
+		StatusCode: http.StatusOK,
+		Headers: map[string]string{
+			"Access-Control-Allow-Origin": "*",
+		},
 	}, nil
 }
 

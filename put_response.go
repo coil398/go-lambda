@@ -1,10 +1,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"time"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -24,7 +24,7 @@ type Response struct {
 	Content   string `json:"content"`
 }
 
-func Handler(ctx context.Context, req Request) (string, error) {
+func Handler(req Request) (events.APIGatewayProxyResponse, error) {
 
 	createdAt := time.Now().Unix()
 
@@ -48,8 +48,6 @@ func Handler(ctx context.Context, req Request) (string, error) {
 		panic(err)
 	}
 
-	fmt.Println(response)
-
 	updateParams := &dynamodb.UpdateItemInput{
 		TableName: aws.String("responses"),
 		Key: map[string]*dynamodb.AttributeValue{
@@ -64,14 +62,14 @@ func Handler(ctx context.Context, req Request) (string, error) {
 		},
 	}
 
-	u, err := svc.UpdateItem(updateParams)
+	_, err = svc.UpdateItem(updateParams)
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(u)
-
-	return "Success", nil
+	return events.APIGatewayProxyResponse{
+		StatusCode: 200,
+	}, nil
 }
 
 func main() {

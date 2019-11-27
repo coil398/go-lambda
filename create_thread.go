@@ -1,11 +1,11 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -14,14 +14,10 @@ import (
 	"github.com/google/uuid"
 )
 
-type Response struct {
+type Request struct {
+	Title   string `json:"title"`
 	Name    string `json:"name"`
 	Content string `json:"content"`
-}
-
-type Request struct {
-	Title    string   `json:"title"`
-	Response Response `json:"response"`
 }
 
 type response struct {
@@ -43,13 +39,15 @@ type thread struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
-func inputData(svc *dynamodb.DynamoDB, data interface{}, target string, wg sync.WaitGroup) {
-	wg.Add(1)
-	defer wg.Done()
+func insertData(svc *dynamodb.DynamoDB, data interface{}, target string, wg *sync.WaitGroup) {
+
+	defer func() {
+		wg.Done()
+	}()
 
 	av, err := dynamodbattribute.MarshalMap(data)
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("marshal error, %v\n", err))
 	}
 
 	putParams := &dynamodb.PutItemInput{
@@ -59,11 +57,18 @@ func inputData(svc *dynamodb.DynamoDB, data interface{}, target string, wg sync.
 
 	_, putErr := svc.PutItem(putParams)
 	if putErr != nil {
-		panic(fmt.Sprintf("failed, %v", putErr))
+		panic(fmt.Sprintf("database put error, %v\n", putErr))
 	}
 }
 
-func Handler(ctx context.Context, req Request) (res string, err error) {
+func Handler(request Request) (events.APIGatewayProxyResponse, error) {
+	// name := request.QueryStringParameters["name"]
+	// title := request.QueryStringParameters["title"]
+	// content := request.QueryStringParameters["content"]
+	name := request.Name
+	title := request.Title
+	content := request.Content
+
 	sess, err := session.NewSession()
 	if err != nil {
 		panic(err)
@@ -75,7 +80,7 @@ func Handler(ctx context.Context, req Request) (res string, err error) {
 	t := thread{
 		Type:      "thr",
 		ID:        threadID,
-		Title:     req.Title,
+		Title:     title,
 		CreatedAt: time.Now().Unix(),
 		UpdatedAt: time.Now().Unix(),
 	}
@@ -84,21 +89,25 @@ func Handler(ctx context.Context, req Request) (res string, err error) {
 		ThreadID: threadID,
 		Responses: []response{
 			response{
-				Name:      req.Response.Name,
+				Name:      name,
 				CreatedAt: time.Now().Unix(),
-				Content:   req.Response.Content,
+				Content:   content,
 			},
 		},
 	}
 
 	var wg sync.WaitGroup
 
-	go inputData(svc, t, "threads", wg)
-	go inputData(svc, r, "responses", wg)
+	wg.Add(1)
+	go insertData(svc, t, "threads", &wg)
+	wg.Add(1)
+	go insertData(svc, r, "responses", &wg)
 
 	wg.Wait()
 
-	return "Success", nil
+	return events.APIGatewayProxyResponse{
+		StatusCode: 200,
+	}, nil
 }
 
 func main() {
