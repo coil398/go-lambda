@@ -41,9 +41,7 @@ type thread struct {
 
 func insertData(svc *dynamodb.DynamoDB, data interface{}, target string, wg *sync.WaitGroup) {
 
-	defer func() {
-		wg.Done()
-	}()
+	defer wg.Done()
 
 	av, err := dynamodbattribute.MarshalMap(data)
 	if err != nil {
@@ -107,6 +105,9 @@ func Handler(request Request) (events.APIGatewayProxyResponse, error) {
 
 	return events.APIGatewayProxyResponse{
 		StatusCode: 200,
+		Headers: map[string]string{
+			"Access-Control-Allow-Origin": "*",
+		},
 	}, nil
 }
 

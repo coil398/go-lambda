@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -24,9 +24,23 @@ type Response struct {
 	Content   string `json:"content"`
 }
 
+type UpdatedAt struct {
+	UpdatedAt int64 `json:"updated_at"`
+}
+
+func updateData(svc *dynamodb.DynamoDB, data *dynamodb.UpdateItemInput, wg *sync.WaitGroup) {
+
+	defer wg.Done()
+
+	_, err := svc.UpdateItem(data)
+	if err != nil {
+		panic(err)
+	}
+}
+
 func Handler(req Request) (events.APIGatewayProxyResponse, error) {
 
-	createdAt := time.Now().Unix()
+	now := time.Now().Unix()
 
 	sess, err := session.NewSession()
 	if err != nil {
@@ -37,18 +51,16 @@ func Handler(req Request) (events.APIGatewayProxyResponse, error) {
 
 	r := []Response{Response{
 		Name:      req.Name,
-		CreatedAt: createdAt,
+		CreatedAt: now,
 		Content:   req.Content,
 	}}
-
-	fmt.Println(r)
 
 	response, err := dynamodbattribute.Marshal(r)
 	if err != nil {
 		panic(err)
 	}
 
-	updateParams := &dynamodb.UpdateItemInput{
+	rInputParams := &dynamodb.UpdateItemInput{
 		TableName: aws.String("responses"),
 		Key: map[string]*dynamodb.AttributeValue{
 			"thread_id": {S: aws.String(req.ThreadID)},
@@ -62,13 +74,42 @@ func Handler(req Request) (events.APIGatewayProxyResponse, error) {
 		},
 	}
 
-	_, err = svc.UpdateItem(updateParams)
+	t := UpdatedAt{
+		UpdatedAt: now,
+	}
+
+	thread, err := dynamodbattribute.Marshal(t)
 	if err != nil {
 		panic(err)
 	}
 
+	tInputParams := &dynamodb.UpdateItemInput{
+		TableName: aws.String("threads"),
+		Key: map[string]*dynamodb.AttributeValue{
+			"type": {S: aws.String("thr")},
+			"id":   {S: aws.String(req.ThreadID)},
+		},
+		UpdateExpression: aws.String("SET #ri = :vals"),
+		ExpressionAttributeNames: map[string]*string{
+			"#ri": aws.String("updated_at"),
+		},
+		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+			":vals": thread,
+		},
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go updateData(svc, rInputParams, &wg)
+	wg.Add(1)
+	go updateData(svc, tInputParams, &wg)
+	wg.Wait()
+
 	return events.APIGatewayProxyResponse{
 		StatusCode: 200,
+		Headers: map[string]string{
+			"Access-Control-Allow-Origin": "*",
+		},
 	}, nil
 }
 
