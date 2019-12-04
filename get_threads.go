@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -28,44 +27,54 @@ type Response struct {
 	Threads []Thread `json:"body"`
 }
 
+func internalServerError() (events.APIGatewayProxyResponse, error) {
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusInternalServerError,
+		Headers: map[string]string{
+			"Access-Control-Allow-Origin": "*",
+		},
+	}, nil
+}
+
 func Handler() (interface{}, error) {
 
 	sess, err := session.NewSession()
 	if err != nil {
-		panic(err)
+		return internalServerError()
 	}
 
 	svc := dynamodb.New(sess)
 
 	getQuery := &dynamodb.QueryInput{
 		TableName: aws.String("threads"),
+		IndexName: aws.String("part-updated_at-index"),
 		ExpressionAttributeNames: map[string]*string{
-			"#Type": aws.String("type"),
+			"#part": aws.String("part"),
 		},
 		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
-			":type": {
-				S: aws.String("thr"),
+			":part": {
+				N: aws.String("0"),
 			},
 		},
-		KeyConditionExpression: aws.String("#Type = :type"),
+		KeyConditionExpression: aws.String("#part = :part"),
 		ProjectionExpression:   aws.String("id, title, created_at, updated_at"),
-		ScanIndexForward:       aws.Bool(true),
+		ScanIndexForward:       aws.Bool(false),
 		Limit:                  aws.Int64(100),
 	}
 
 	result, err := svc.Query(getQuery)
 	if err != nil {
-		fmt.Println("Query error: ", err)
+		return internalServerError()
 	}
 
 	threads := make([]Thread, 0)
 	if err := dynamodbattribute.UnmarshalListOfMaps(result.Items, &threads); err != nil {
-		fmt.Println("Unmarshalable error: ", err)
+		return internalServerError()
 	}
 
 	jsonBody, err := json.Marshal(threads)
 	if err != nil {
-		panic(err)
+		return internalServerError()
 	}
 
 	return events.APIGatewayProxyResponse{

@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -23,46 +22,62 @@ type Response struct {
 	Responses interface{} `json:"body"`
 }
 
+func internalServerError() (events.APIGatewayProxyResponse, error) {
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusInternalServerError,
+		Headers: map[string]string{
+			"Access-Control-Allow-Origin": "*",
+		},
+	}, nil
+}
+
 func Handler(request events.APIGatewayProxyRequest) (interface{}, error) {
 
-	id := request.QueryStringParameters["id"]
+	var id string
+	if tmp, ok := request.PathParameters["id"]; ok == true {
+		id = tmp
+	} else if tmp, ok := request.QueryStringParameters["id"]; ok == true {
+		id = tmp
+	} else {
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusBadRequest,
+			Headers: map[string]string{
+				"Access-Control-Allow-Origin": "*",
+			},
+		}, nil
+	}
 
 	sess, err := session.NewSession()
 	if err != nil {
-		panic(err)
+		return internalServerError()
 	}
 
 	svc := dynamodb.New(sess)
 
-	getQuery := &dynamodb.QueryInput{
+	getItemInput := &dynamodb.GetItemInput{
 		TableName: aws.String("responses"),
-		ExpressionAttributeNames: map[string]*string{
-			"#ThreadID": aws.String("thread_id"),
-		},
-		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
-			":id": {
+		Key: map[string]*dynamodb.AttributeValue{
+			"thread_id": {
 				S: aws.String(id),
 			},
 		},
-		KeyConditionExpression: aws.String("#ThreadID = :id"),
-		ProjectionExpression:   aws.String("responses"),
 	}
 
-	result, err := svc.Query(getQuery)
+	result, err := svc.GetItem(getItemInput)
 	if err != nil {
-		fmt.Println("Query error: ", err)
+		return internalServerError()
 	}
 
-	responses := make([]interface{}, 0)
-	if err := dynamodbattribute.UnmarshalListOfMaps(result.Items, &responses); err != nil {
-		fmt.Println("Unmarshalable error: ", err)
+	var responses interface{}
+	if err := dynamodbattribute.UnmarshalMap(result.Item, &responses); err != nil {
+		return internalServerError()
 	}
 
-	rv := reflect.ValueOf(responses[0])
+	rv := reflect.ValueOf(responses)
 	res := rv.MapIndex(reflect.ValueOf("responses")).Interface()
 	jsonBody, err := json.Marshal(res)
 	if err != nil {
-		panic(err)
+		return internalServerError()
 	}
 
 	return events.APIGatewayProxyResponse{

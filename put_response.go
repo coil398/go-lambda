@@ -1,7 +1,9 @@
 package main
 
 import (
-	"sync"
+	"context"
+	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -10,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
+	"golang.org/x/sync/errgroup"
 )
 
 type Request struct {
@@ -28,23 +31,38 @@ type UpdatedAt struct {
 	UpdatedAt int64 `json:"updated_at"`
 }
 
-func updateData(svc *dynamodb.DynamoDB, data *dynamodb.UpdateItemInput, wg *sync.WaitGroup) {
+func internalServerError() (events.APIGatewayProxyResponse, error) {
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusInternalServerError,
+		Headers: map[string]string{
+			"Access-Control-Allow-Origin": "*",
+		},
+	}, nil
+}
 
-	defer wg.Done()
+func updateData(ctx context.Context, svc *dynamodb.DynamoDB, data *dynamodb.UpdateItemInput) error {
 
-	_, err := svc.UpdateItem(data)
-	if err != nil {
-		panic(err)
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("Update data in the table, %v failed", aws.StringValue(data.TableName))
+		default:
+			_, err := svc.UpdateItem(data)
+			if err != nil {
+				continue
+			}
+			return nil
+		}
 	}
 }
 
-func Handler(req Request) (events.APIGatewayProxyResponse, error) {
+func handler(req Request) (events.APIGatewayProxyResponse, error) {
 
 	now := time.Now().Unix()
 
 	sess, err := session.NewSession()
 	if err != nil {
-		panic(err)
+		return internalServerError()
 	}
 
 	svc := dynamodb.New(sess)
@@ -55,15 +73,17 @@ func Handler(req Request) (events.APIGatewayProxyResponse, error) {
 		Content:   req.Content,
 	}}
 
+	threadID := req.ThreadID
+
 	response, err := dynamodbattribute.Marshal(r)
 	if err != nil {
-		panic(err)
+		return internalServerError()
 	}
 
 	rInputParams := &dynamodb.UpdateItemInput{
 		TableName: aws.String("responses"),
 		Key: map[string]*dynamodb.AttributeValue{
-			"thread_id": {S: aws.String(req.ThreadID)},
+			"thread_id": {S: aws.String(threadID)},
 		},
 		UpdateExpression: aws.String("SET #ri = list_append(#ri, :vals)"),
 		ExpressionAttributeNames: map[string]*string{
@@ -74,36 +94,40 @@ func Handler(req Request) (events.APIGatewayProxyResponse, error) {
 		},
 	}
 
-	t := UpdatedAt{
-		UpdatedAt: now,
-	}
-
-	thread, err := dynamodbattribute.Marshal(t)
+	updatedAt, err := dynamodbattribute.Marshal(now)
 	if err != nil {
-		panic(err)
+		return internalServerError()
 	}
 
 	tInputParams := &dynamodb.UpdateItemInput{
 		TableName: aws.String("threads"),
 		Key: map[string]*dynamodb.AttributeValue{
-			"type": {S: aws.String("thr")},
-			"id":   {S: aws.String(req.ThreadID)},
+			"part": {N: aws.String("0")},
+			"id":   {S: aws.String(threadID)},
 		},
 		UpdateExpression: aws.String("SET #ri = :vals"),
 		ExpressionAttributeNames: map[string]*string{
 			"#ri": aws.String("updated_at"),
 		},
 		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
-			":vals": thread,
+			":vals": updatedAt,
 		},
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go updateData(svc, rInputParams, &wg)
-	wg.Add(1)
-	go updateData(svc, tInputParams, &wg)
-	wg.Wait()
+	eg, ctx := errgroup.WithContext(context.Background())
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	eg.Go(func() error {
+		return updateData(ctx, svc, rInputParams)
+	})
+	eg.Go(func() error {
+		return updateData(ctx, svc, tInputParams)
+	})
+
+	if err := eg.Wait(); err != nil {
+		return internalServerError()
+	}
 
 	return events.APIGatewayProxyResponse{
 		StatusCode: 200,
@@ -114,5 +138,5 @@ func Handler(req Request) (events.APIGatewayProxyResponse, error) {
 }
 
 func main() {
-	lambda.Start(Handler)
+	lambda.Start(handler)
 }

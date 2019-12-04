@@ -1,8 +1,8 @@
 package main
 
 import (
-	"fmt"
-	"sync"
+	"context"
+	"net/http"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 )
 
 type Request struct {
@@ -32,20 +33,28 @@ type responses struct {
 }
 
 type thread struct {
-	Type      string `json:"type"`
+	Part      int    `json:"part"`
 	ID        string `json:"id"`
 	Title     string `json:"title"`
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
+	Name      string `json:"name"`
 }
 
-func insertData(svc *dynamodb.DynamoDB, data interface{}, target string, wg *sync.WaitGroup) {
+func internalServerError() (events.APIGatewayProxyResponse, error) {
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusInternalServerError,
+		Headers: map[string]string{
+			"Access-Control-Allow-Origin": "*",
+		},
+	}, nil
+}
 
-	defer wg.Done()
+func insertData(ctx context.Context, svc *dynamodb.DynamoDB, data interface{}, target string) error {
 
 	av, err := dynamodbattribute.MarshalMap(data)
 	if err != nil {
-		panic(fmt.Sprintf("marshal error, %v\n", err))
+		return err
 	}
 
 	putParams := &dynamodb.PutItemInput{
@@ -53,32 +62,37 @@ func insertData(svc *dynamodb.DynamoDB, data interface{}, target string, wg *syn
 		Item:      av,
 	}
 
-	_, putErr := svc.PutItem(putParams)
-	if putErr != nil {
-		panic(fmt.Sprintf("database put error, %v\n", putErr))
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+		_, err = svc.PutItem(putParams)
+		if err != nil {
+			return err
+		}
 	}
+
+	return nil
 }
 
-func Handler(request Request) (events.APIGatewayProxyResponse, error) {
-	// name := request.QueryStringParameters["name"]
-	// title := request.QueryStringParameters["title"]
-	// content := request.QueryStringParameters["content"]
+func handler(request Request) (events.APIGatewayProxyResponse, error) {
 	name := request.Name
 	title := request.Title
 	content := request.Content
 
 	sess, err := session.NewSession()
 	if err != nil {
-		panic(err)
+		return internalServerError()
 	}
 
 	svc := dynamodb.New(sess)
 	threadID := uuid.New().String()
 
 	t := thread{
-		Type:      "thr",
+		Part:      0,
 		ID:        threadID,
 		Title:     title,
+		Name:      name,
 		CreatedAt: time.Now().Unix(),
 		UpdatedAt: time.Now().Unix(),
 	}
@@ -94,17 +108,23 @@ func Handler(request Request) (events.APIGatewayProxyResponse, error) {
 		},
 	}
 
-	var wg sync.WaitGroup
+	eg, ctx := errgroup.WithContext(context.TODO())
+	ctx, cancel := context.WithCancel(ctx)
 
-	wg.Add(1)
-	go insertData(svc, t, "threads", &wg)
-	wg.Add(1)
-	go insertData(svc, r, "responses", &wg)
+	eg.Go(func() error {
+		return insertData(ctx, svc, t, "threads")
+	})
+	eg.Go(func() error {
+		return insertData(ctx, svc, r, "responses")
+	})
 
-	wg.Wait()
+	if err := eg.Wait(); err != nil {
+		cancel()
+		return internalServerError()
+	}
 
 	return events.APIGatewayProxyResponse{
-		StatusCode: 200,
+		StatusCode: http.StatusOK,
 		Headers: map[string]string{
 			"Access-Control-Allow-Origin": "*",
 		},
@@ -112,5 +132,5 @@ func Handler(request Request) (events.APIGatewayProxyResponse, error) {
 }
 
 func main() {
-	lambda.Start(Handler)
+	lambda.Start(handler)
 }
